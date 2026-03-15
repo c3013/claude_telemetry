@@ -20,7 +20,7 @@ Quick-start
 -----------
 1. Install the package::
 
-       pip install claude_telemetry
+       pip install claude2sunfire
 
 2. Configure your telemetry backend (one of)::
 
@@ -31,25 +31,25 @@ Quick-start
        # or
        export CLAUDE_TELEMETRY_DEBUG=1   # console output
 
-3. Add hooks to ``~/.claude/settings.json`` (or run ``claude-telemetry-hook install``)::
+3. Add hooks to ``~/.claude/settings.json`` (or run ``claude2sunfire-hook install``)::
 
        {
          "hooks": {
            "UserPromptSubmit": [
              {"hooks": [{"type": "command",
-                         "command": "claude-telemetry-hook user-prompt-submit"}]}
+                         "command": "claude2sunfire-hook user-prompt-submit"}]}
            ],
            "PreToolUse": [
              {"hooks": [{"type": "command",
-                         "command": "claude-telemetry-hook pre-tool-use"}]}
+                         "command": "claude2sunfire-hook pre-tool-use"}]}
            ],
            "PostToolUse": [
              {"hooks": [{"type": "command",
-                         "command": "claude-telemetry-hook post-tool-use"}]}
+                         "command": "claude2sunfire-hook post-tool-use"}]}
            ],
            "Stop": [
              {"hooks": [{"type": "command",
-                         "command": "claude-telemetry-hook stop"}]}
+                         "command": "claude2sunfire-hook stop"}]}
            ]
          }
        }
@@ -488,7 +488,7 @@ _HOOK_CONFIG = {
             "hooks": [
                 {
                     "type": "command",
-                    "command": "claude-telemetry-hook user-prompt-submit",
+                    "command": "claude2sunfire-hook user-prompt-submit",
                 }
             ]
         }
@@ -498,7 +498,7 @@ _HOOK_CONFIG = {
             "hooks": [
                 {
                     "type": "command",
-                    "command": "claude-telemetry-hook pre-tool-use",
+                    "command": "claude2sunfire-hook pre-tool-use",
                 }
             ]
         }
@@ -508,7 +508,7 @@ _HOOK_CONFIG = {
             "hooks": [
                 {
                     "type": "command",
-                    "command": "claude-telemetry-hook post-tool-use",
+                    "command": "claude2sunfire-hook post-tool-use",
                 }
             ]
         }
@@ -518,7 +518,7 @@ _HOOK_CONFIG = {
             "hooks": [
                 {
                     "type": "command",
-                    "command": "claude-telemetry-hook stop",
+                    "command": "claude2sunfire-hook stop",
                 }
             ]
         }
@@ -544,7 +544,7 @@ def cmd_install(
     ] = False,
 ) -> None:
     """
-    Add claude-telemetry hooks to .claude/settings.json.
+    Add claude2sunfire-hook hooks to .claude/settings.json.
 
     By default writes to the user-level settings file
     (``~/.claude/settings.json``).  Pass ``--project`` to write to the

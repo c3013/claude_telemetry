@@ -37,7 +37,7 @@ export HONEYCOMB_API_KEY="your-honeycomb-api-key"
 
 ```bash
 # Install the package first
-pip install claude_telemetry
+pip install claude2sunfire
 
 # Or install from source
 pip install -e .

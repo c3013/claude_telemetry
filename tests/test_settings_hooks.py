@@ -620,4 +620,5 @@ class TestInstallInto:
             for h in matcher.get("hooks", [])
         ]
         assert "my-custom-hook" in commands
-        assert "claude-telemetry-hook pre-tool-use" in commands
+        assert "claude2sunfire-hook pre-tool-use" in commands
+        assert "claude-telemetry-hook pre-tool-use" not in commands

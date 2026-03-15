@@ -117,7 +117,7 @@ Configure one of the following:
 
 1. Logfire (recommended for LLM observability):
    export LOGFIRE_TOKEN="your_token_here"
-   pip install "claude_telemetry[logfire]"
+   pip install "claude2sunfire[logfire]"
 
 2. Sentry (for LLM monitoring with error tracking):
    export SENTRY_DSN="https://your-key@sentry.io/project-id"

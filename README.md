@@ -37,7 +37,7 @@ is automatically traced.
 **Step 1 – Install:**
 
 ```bash
-pip install claude_telemetry
+pip install claude2sunfire
 ```
 
 **Step 2 – Configure a telemetry backend (one of):**
@@ -57,10 +57,10 @@ export CLAUDE_TELEMETRY_DEBUG=1
 **Step 3 – Install hooks into `~/.claude/settings.json`:**
 
 ```bash
-claude-telemetry-hook install
+claude2sunfire-hook install
 ```
 
-Or if you prefer to edit the file manually, run `claude-telemetry-hook show-config`
+Or if you prefer to edit the file manually, run `claude2sunfire-hook show-config`
 for the exact JSON to add.
 
 **Step 4 – Use `claude` as normal:**
@@ -91,7 +91,7 @@ identical, but now you get full traces in your observability platform.
 
 ## `.claude/settings.json` Hooks (Option 1 details)
 
-The `claude-telemetry-hook` CLI provides one sub-command per Claude Code hook event.
+The `claude2sunfire-hook` CLI provides one sub-command per Claude Code hook event.
 Claude Code invokes each command as a subprocess, passing JSON on stdin.
 
 ### Available commands
@@ -111,16 +111,16 @@ Claude Code invokes each command as a subprocess, passing JSON on stdin.
 {
   "hooks": {
     "UserPromptSubmit": [
-      {"hooks": [{"type": "command", "command": "claude-telemetry-hook user-prompt-submit"}]}
+      {"hooks": [{"type": "command", "command": "claude2sunfire-hook user-prompt-submit"}]}
     ],
     "PreToolUse": [
-      {"hooks": [{"type": "command", "command": "claude-telemetry-hook pre-tool-use"}]}
+      {"hooks": [{"type": "command", "command": "claude2sunfire-hook pre-tool-use"}]}
     ],
     "PostToolUse": [
-      {"hooks": [{"type": "command", "command": "claude-telemetry-hook post-tool-use"}]}
+      {"hooks": [{"type": "command", "command": "claude2sunfire-hook post-tool-use"}]}
     ],
     "Stop": [
-      {"hooks": [{"type": "command", "command": "claude-telemetry-hook stop"}]}
+      {"hooks": [{"type": "command", "command": "claude2sunfire-hook stop"}]}
     ]
   }
 }
@@ -131,10 +131,10 @@ compaction events:
 
 ```json
     "MessageComplete": [
-      {"hooks": [{"type": "command", "command": "claude-telemetry-hook message-complete"}]}
+      {"hooks": [{"type": "command", "command": "claude2sunfire-hook message-complete"}]}
     ],
     "PreCompact": [
-      {"hooks": [{"type": "command", "command": "claude-telemetry-hook pre-compact"}]}
+      {"hooks": [{"type": "command", "command": "claude2sunfire-hook pre-compact"}]}
     ]
 ```
 
@@ -145,7 +145,7 @@ records to a session state file at `~/.cache/claude_telemetry/sessions/<session_
 The file persists across the multiple subprocess invocations that make up a single
 Claude Code session.
 
-When Claude Code fires the `Stop` event, `claude-telemetry-hook stop` reads the
+When Claude Code fires the `Stop` event, `claude2sunfire-hook stop` reads the
 complete state, creates a single OTel session span containing all events in
 chronological order, exports it to the configured backend, and removes the state file.
 
@@ -156,13 +156,13 @@ clean, complete trace per session with accurate timings.
 
 ```bash
 # Print the JSON snippet (for manual editing)
-claude-telemetry-hook show-config
+claude2sunfire-hook show-config
 
 # Check that a backend is configured
-claude-telemetry-hook check-env
+claude2sunfire-hook check-env
 
 # Install into project-level settings instead of user-level
-claude-telemetry-hook install --no-user --project
+claude2sunfire-hook install --no-user --project
 ```
 
 ## For Developers
@@ -204,13 +204,13 @@ workflows—all without changing how you work.
 
 ```bash
 # Basic installation - works with any OTEL backend
-pip install claude_telemetry
+pip install claude2sunfire
 
 # Or with Logfire support for enhanced LLM telemetry
-pip install "claude_telemetry[logfire]"
+pip install "claude2sunfire[logfire]"
 
 # Or with Sentry for LLM monitoring with error tracking
-pip install claude_telemetry sentry-sdk
+pip install claude2sunfire sentry-sdk
 ```
 
 ### For Python Scripts
@@ -789,7 +789,7 @@ completion.
 **Logfire LLM UI not showing:**
 
 - Ensure `LOGFIRE_TOKEN` is set
-- Install the `logfire` extra: `pip install "claude_telemetry[logfire]"`
+- Install the `logfire` extra: `pip install "claude2sunfire[logfire]"`
 - Check console for "Logfire project URL" to confirm connection
 
 **Agent runs but no telemetry:**
