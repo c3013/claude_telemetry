@@ -25,7 +25,7 @@ from .telemetry import configure_telemetry  # noqa: E402
 # Settings-hooks API (for .claude/settings.json integration)
 from .settings_hooks import export_session_trace  # noqa: E402
 
-__version__ = version("claude_telemetry")
+__version__ = version("claude2sunfire")
 
 __all__ = [
     "__version__",

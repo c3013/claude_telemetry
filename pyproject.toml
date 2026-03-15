@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "setuptools-scm>=8.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "claude_telemetry"
+name = "claude2sunfire"
 dynamic = ["version"]
 description = "OpenTelemetry instrumentation for Claude agents"
 authors = [{ name = "Nick Garvey", email = "nick@technick.ai" }]
@@ -44,8 +44,8 @@ dev = [
 
 [project.scripts]
 claudia = "claude_telemetry.cli:app"
-claude-telemetry = "claude_telemetry.cli:app"
-claude-telemetry-hook = "claude_telemetry.settings_hooks:hook_app"
+claude2sunfire = "claude_telemetry.cli:app"
+claude2sunfire-hook = "claude_telemetry.settings_hooks:hook_app"
 
 [project.urls]
 Homepage = "https://github.com/TechNickAI/claude_telemetry"
