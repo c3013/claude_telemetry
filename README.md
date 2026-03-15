@@ -423,10 +423,15 @@ export SENTRY_TRACES_SAMPLE_RATE="1.0"          # Optional (0.0-1.0)
 **Any OTEL backend:**
 
 ```bash
-export OTEL_EXPORTER_OTLP_ENDPOINT="https://your-endpoint.com/v1/traces"
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://your-endpoint.com"
 export OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer your-token"
 export OTEL_SERVICE_NAME="my-claude-agents"  # Optional, defaults to "claude-agents"
 ```
+
+> **Protocol & port:** `claude_telemetry` uses **OTLP/HTTP** (proto over HTTP, default
+> port **4318**), not gRPC (port 4317). Set `OTEL_EXPORTER_OTLP_ENDPOINT` to the base
+> URL of your backend (e.g. `https://api.honeycomb.io`). The `/v1/traces` path is
+> appended automatically, so you can include it or omit it — both forms work.
 
 **Debug mode:**
 

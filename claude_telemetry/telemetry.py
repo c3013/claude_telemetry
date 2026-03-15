@@ -139,7 +139,12 @@ See https://github.com/TechNickAI/claude_telemetry for more details.
 
 
 def _configure_otel(endpoint: str, service_name: str) -> TracerProvider:
-    """Configure standard OTEL exporter."""
+    """Configure standard OTEL exporter.
+
+    Uses OTLP over HTTP (proto/HTTP, port 4318) — not gRPC (port 4317).
+    The /v1/traces path is appended automatically if omitted from the endpoint,
+    so both "https://api.example.com" and "https://api.example.com/v1/traces" work.
+    """
     resource = Resource.create({"service.name": service_name})
 
     # Parse headers from environment
@@ -151,7 +156,8 @@ def _configure_otel(endpoint: str, service_name: str) -> TracerProvider:
                 key, value = header.split("=", 1)
                 headers[key.strip()] = value.strip()
 
-    # Create OTLP exporter
+    # Create OTLP/HTTP exporter (port 4318 by default; not gRPC port 4317).
+    # Append /v1/traces to the base URL if the caller did not include it.
     exporter = OTLPSpanExporter(
         endpoint=endpoint
         if endpoint.endswith("/v1/traces")
