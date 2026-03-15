@@ -22,6 +22,9 @@ from .sync import (  # noqa: E402
 # Configuration utilities
 from .telemetry import configure_telemetry  # noqa: E402
 
+# Settings-hooks API (for .claude/settings.json integration)
+from .settings_hooks import export_session_trace  # noqa: E402
+
 __version__ = version("claude_telemetry")
 
 __all__ = [
@@ -34,4 +37,6 @@ __all__ = [
     "run_agent_interactive_sync",
     # Configuration
     "configure_telemetry",
+    # Settings-hooks
+    "export_session_trace",
 ]

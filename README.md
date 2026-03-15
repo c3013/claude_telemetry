@@ -28,6 +28,54 @@ Your agents become observable whether local or headless.
 
 ## Quick Start
 
+### Option 1: Hook-based (recommended) — keep using `claude` as-is
+
+Add OTel tracing to your existing `claude` workflow without changing any commands.
+Just configure hooks in `~/.claude/settings.json` once and every `claude` session
+is automatically traced.
+
+**Step 1 – Install:**
+
+```bash
+pip install claude_telemetry
+```
+
+**Step 2 – Configure a telemetry backend (one of):**
+
+```bash
+# Any OTEL backend (Honeycomb, Datadog, Grafana, …)
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://api.honeycomb.io"
+export OTEL_EXPORTER_OTLP_HEADERS="x-honeycomb-team=<key>"
+
+# Or Logfire
+export LOGFIRE_TOKEN="<token>"
+
+# Or console output (useful for debugging)
+export CLAUDE_TELEMETRY_DEBUG=1
+```
+
+**Step 3 – Install hooks into `~/.claude/settings.json`:**
+
+```bash
+claude-telemetry-hook install
+```
+
+Or if you prefer to edit the file manually, run `claude-telemetry-hook show-config`
+for the exact JSON to add.
+
+**Step 4 – Use `claude` as normal:**
+
+```bash
+claude "Analyze my project and suggest improvements"
+```
+
+Traces appear in your OTel backend automatically after each session ends.
+No wrapper, no code changes—just hooks that fire in the background.
+
+---
+
+### Option 2: `claudia` wrapper — drop-in replacement for `claude`
+
 The simplest way to add observability: swap `claude` for `claudia` on the command line.
 
 ```bash
@@ -40,6 +88,82 @@ claudia "Analyze my project and suggest improvements"
 
 That's it. Every flag you use with `claude code` works with `claudia`. The behavior is
 identical, but now you get full traces in your observability platform.
+
+## `.claude/settings.json` Hooks (Option 1 details)
+
+The `claude-telemetry-hook` CLI provides one sub-command per Claude Code hook event.
+Claude Code invokes each command as a subprocess, passing JSON on stdin.
+
+### Available commands
+
+| Command | Claude Code event | What it does |
+|---|---|---|
+| `user-prompt-submit` | `UserPromptSubmit` | Initialises session state file |
+| `pre-tool-use` | `PreToolUse` | Records tool start + input |
+| `post-tool-use` | `PostToolUse` | Records tool result |
+| `message-complete` | `MessageComplete` | Accumulates token counts |
+| `pre-compact` | `PreCompact` | Records context-compaction event |
+| `stop` | `Stop` | Exports complete OTel trace & cleans up |
+
+### Manual configuration
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "claude-telemetry-hook user-prompt-submit"}]}
+    ],
+    "PreToolUse": [
+      {"hooks": [{"type": "command", "command": "claude-telemetry-hook pre-tool-use"}]}
+    ],
+    "PostToolUse": [
+      {"hooks": [{"type": "command", "command": "claude-telemetry-hook post-tool-use"}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "claude-telemetry-hook stop"}]}
+    ]
+  }
+}
+```
+
+You can also add `MessageComplete` and `PreCompact` hooks for richer token-count and
+compaction events:
+
+```json
+    "MessageComplete": [
+      {"hooks": [{"type": "command", "command": "claude-telemetry-hook message-complete"}]}
+    ],
+    "PreCompact": [
+      {"hooks": [{"type": "command", "command": "claude-telemetry-hook pre-compact"}]}
+    ]
+```
+
+### How the hook pipeline works
+
+Each data-collection hook (`user-prompt-submit`, `pre-tool-use`, etc.) writes event
+records to a session state file at `~/.cache/claude_telemetry/sessions/<session_id>.json`.
+The file persists across the multiple subprocess invocations that make up a single
+Claude Code session.
+
+When Claude Code fires the `Stop` event, `claude-telemetry-hook stop` reads the
+complete state, creates a single OTel session span containing all events in
+chronological order, exports it to the configured backend, and removes the state file.
+
+This approach avoids the "long-lived span across processes" problem: you get one
+clean, complete trace per session with accurate timings.
+
+### Utility commands
+
+```bash
+# Print the JSON snippet (for manual editing)
+claude-telemetry-hook show-config
+
+# Check that a backend is configured
+claude-telemetry-hook check-env
+
+# Install into project-level settings instead of user-level
+claude-telemetry-hook install --no-user --project
+```
 
 ## For Developers
 
