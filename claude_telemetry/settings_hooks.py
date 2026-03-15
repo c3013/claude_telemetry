@@ -253,10 +253,15 @@ def export_session_trace(state: dict, stop_reason: str = "end_turn") -> None:
 
         session_span.add_event("🎉 Completed", {"stop_reason": stop_reason})
 
-    # Force-flush so spans are exported before the process exits
+    # Force-flush then shut down so spans are fully exported before the
+    # process exits.  BatchSpanProcessor uses a daemon worker thread; without
+    # an explicit shutdown() that thread is killed by sys.exit() before the
+    # HTTP request carrying the span data completes.
     provider = trace.get_tracer_provider()
     if hasattr(provider, "force_flush"):
         provider.force_flush()
+    if hasattr(provider, "shutdown"):
+        provider.shutdown()
 
     duration = time.time() - start_time
     logger.info(

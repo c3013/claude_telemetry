@@ -489,6 +489,48 @@ class TestExportSessionTrace:
 
         export_session_trace({})  # no exception
 
+    def test_provider_shutdown_called_after_force_flush(
+        self, mocker, monkeypatch, minimal_state
+    ):
+        """shutdown() must be called after force_flush() so the daemon exporter
+        thread is joined before sys.exit() destroys buffered span data."""
+        monkeypatch.setenv("CLAUDE_TELEMETRY_DEBUG", "1")
+
+        mock_tracer = MagicMock()
+        mock_tracer.start_as_current_span.return_value.__enter__ = lambda s, *a: (
+            MagicMock()
+        )
+        mock_tracer.start_as_current_span.return_value.__exit__ = (
+            lambda s, *a: False
+        )
+
+        mock_provider = MagicMock()
+        call_order = []
+        mock_provider.force_flush.side_effect = lambda *a, **kw: call_order.append(
+            "force_flush"
+        )
+        mock_provider.shutdown.side_effect = lambda *a, **kw: call_order.append(
+            "shutdown"
+        )
+
+        mocker.patch(
+            "claude_telemetry.settings_hooks.trace.get_tracer",
+            return_value=mock_tracer,
+        )
+        mocker.patch("claude_telemetry.settings_hooks.configure_telemetry")
+        mocker.patch(
+            "claude_telemetry.settings_hooks.trace.get_tracer_provider",
+            return_value=mock_provider,
+        )
+
+        export_session_trace(minimal_state, stop_reason="end_turn")
+
+        assert "force_flush" in call_order, "force_flush() was not called"
+        assert "shutdown" in call_order, "shutdown() was not called"
+        assert call_order.index("force_flush") < call_order.index("shutdown"), (
+            "force_flush() must be called before shutdown()"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Install command
