@@ -124,6 +124,34 @@ class TestStateHelpers:
         """Should not raise if state file doesn't exist."""
         _clear_state(sample_session_id)  # no exception
 
+    def test_load_state_returns_fresh_state_on_corrupt_file(
+        self, tmp_state_dir, sample_session_id
+    ):
+        """A corrupt (partially-written) state file must not crash the hook."""
+        # Simulate the "Extra data" corruption that happens with concurrent writes
+        corrupt = '{"session_id": "x", "start_time": 1234}{"session_id": "x"}'
+        _state_file(sample_session_id).write_text(corrupt)
+
+        state = _load_state(sample_session_id)
+        # Should silently recover and return a fresh state
+        assert state["session_id"] == sample_session_id
+        assert state["events"] == []
+        assert state["metrics"]["input_tokens"] == 0
+
+    def test_save_state_is_atomic(self, tmp_state_dir, sample_session_id):
+        """_save_state must not leave .tmp files in the state directory."""
+        state = _load_state(sample_session_id)
+        state["prompt"] = "atomic test"
+        _save_state(sample_session_id, state)
+
+        # The destination file must exist and be valid JSON
+        loaded = _load_state(sample_session_id)
+        assert loaded["prompt"] == "atomic test"
+
+        # No leftover .tmp files
+        tmp_files = list(tmp_state_dir.glob("*.tmp"))
+        assert tmp_files == [], f"Unexpected .tmp files left behind: {tmp_files}"
+
 
 # ---------------------------------------------------------------------------
 # Hook command handlers (via stdin simulation)

@@ -60,6 +60,7 @@ Quick-start
 import json
 import os
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -112,10 +113,21 @@ def _state_file(session_id: str) -> Path:
 
 
 def _load_state(session_id: str) -> dict:
-    """Load persisted session state; return fresh state if none exists."""
+    """Load persisted session state; return fresh state if none exists.
+
+    If the state file exists but cannot be parsed (e.g. because a concurrent
+    hook process left it in a partially-written state), the corrupt file is
+    discarded and a fresh state is returned rather than crashing.
+    """
     sf = _state_file(session_id)
     if sf.exists():
-        return json.loads(sf.read_text())
+        try:
+            return json.loads(sf.read_text())
+        except json.JSONDecodeError:
+            logger.warning(
+                f"State file for session {session_id} is corrupted; "
+                "discarding and starting fresh."
+            )
     return {
         "session_id": session_id,
         "start_time": time.time(),
@@ -133,8 +145,24 @@ def _load_state(session_id: str) -> dict:
 
 
 def _save_state(session_id: str, state: dict) -> None:
-    """Persist session state to file."""
-    _state_file(session_id).write_text(json.dumps(state))
+    """Persist session state to file atomically.
+
+    Writes to a temporary file in the same directory then calls
+    ``os.replace()``, which is atomic on POSIX systems.  This prevents a
+    concurrent hook process from reading a partially-written file.
+    """
+    dest = _state_file(session_id)
+    fd, tmp = tempfile.mkstemp(dir=dest.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(state))
+        os.replace(tmp, dest)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _clear_state(session_id: str) -> None:
