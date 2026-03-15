@@ -567,10 +567,8 @@ def cmd_install(
 
     typer.echo(
         "\nRemember to configure your telemetry backend:\n"
-        "  export OTEL_EXPORTER_OTLP_ENDPOINT='https://...'\n"
-        "  export OTEL_EXPORTER_OTLP_HEADERS='key=value'\n"
-        "or:\n"
-        "  export LOGFIRE_TOKEN='...'\n"
+        "  export OTEL_EXPORTER_OTLP_ENDPOINT='https://xxx:4318'\n"
+        "  export OTEL_RESOURCE_ATTRIBUTES='service.name=claude-agents'\n"
     )
 
 
