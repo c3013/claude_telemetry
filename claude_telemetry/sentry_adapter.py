@@ -8,6 +8,7 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 
 from claude_telemetry.helpers.logger import logger
+from claude_telemetry.telemetry import _resolve_service_name
 
 
 def configure_sentry(service_name: str = "claude-agents") -> TracerProvider:
@@ -62,7 +63,7 @@ def configure_sentry(service_name: str = "claude-agents") -> TracerProvider:
         )
 
         # Create OpenTelemetry provider with Sentry processor
-        resource = Resource.create({"service.name": service_name})
+        resource = Resource.create({"service.name": _resolve_service_name(service_name)})
         provider = TracerProvider(resource=resource)
 
         # Add Sentry span processor to bridge OTEL spans to Sentry
