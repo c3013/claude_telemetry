@@ -98,12 +98,14 @@ Claude Code invokes each command as a subprocess, passing JSON on stdin.
 
 | Command | Claude Code event | What it does |
 |---|---|---|
-| `user-prompt-submit` | `UserPromptSubmit` | Initialises session state file |
+| `user-prompt-submit` | `UserPromptSubmit` | Initialises session state file and opens a turn span |
 | `pre-tool-use` | `PreToolUse` | Records tool start + input |
 | `post-tool-use` | `PostToolUse` | Records tool result |
-| `message-complete` | `MessageComplete` | Accumulates token counts |
+| `message-complete` | `MessageComplete` | Accumulates token counts and closes the turn span |
 | `pre-compact` | `PreCompact` | Records context-compaction event |
-| `stop` | `Stop` | Exports complete OTel trace & cleans up |
+| `subagent-stop` | `SubagentStop` | Records subagent completion with token usage |
+| `notification` | `Notification` | Records notification messages emitted by Claude Code |
+| `stop` | `Stop` | Exports the complete OTel trace with hierarchy & cleans up |
 
 ### Manual configuration
 
@@ -121,22 +123,42 @@ Claude Code invokes each command as a subprocess, passing JSON on stdin.
     ],
     "Stop": [
       {"hooks": [{"type": "command", "command": "claude2sunfire-hook stop"}]}
-    ]
-  }
-}
-```
-
-You can also add `MessageComplete` and `PreCompact` hooks for richer token-count and
-compaction events:
-
-```json
+    ],
     "MessageComplete": [
       {"hooks": [{"type": "command", "command": "claude2sunfire-hook message-complete"}]}
     ],
     "PreCompact": [
       {"hooks": [{"type": "command", "command": "claude2sunfire-hook pre-compact"}]}
+    ],
+    "SubagentStop": [
+      {"hooks": [{"type": "command", "command": "claude2sunfire-hook subagent-stop"}]}
+    ],
+    "Notification": [
+      {"hooks": [{"type": "command", "command": "claude2sunfire-hook notification"}]}
     ]
+  }
+}
 ```
+
+### Trace hierarchy
+
+The exported trace reflects the actual call structure of your Claude Code session:
+
+```
+🤖 <session prompt>                      ← root session span
+├── 👤 Turn 1: write hello world         ← UserPromptSubmit → MessageComplete
+│   ├── 🔧 Bash: echo hello              ← PreToolUse → PostToolUse (matched by tool_use_id)
+│   └── 🔧 Read: /path/to/file
+├── 👤 Turn 2: add error handling        ← second user prompt
+│   └── 🔧 Write: /path/to/output
+├── 🗜️ Context compaction               ← PreCompact
+├── 🔔 Running linter...                 ← Notification
+└── 🤖 Subagent completed               ← SubagentStop
+```
+
+Each tool span covers the wall-clock time between `PreToolUse` and the matching
+`PostToolUse` (correlated by `tool_use_id`), giving accurate latencies for every
+tool call in the trace.
 
 ### How the hook pipeline works
 
@@ -146,11 +168,12 @@ The file persists across the multiple subprocess invocations that make up a sing
 Claude Code session.
 
 When Claude Code fires the `Stop` event, `claude2sunfire-hook stop` reads the
-complete state, creates a single OTel session span containing all events in
-chronological order, exports it to the configured backend, and removes the state file.
+complete state and reconstructs the full span hierarchy retroactively — using
+explicit OTel `start_time`/`end_time` timestamps — so you get accurate parent-child
+relationships even though each hook ran in a separate process.
 
 This approach avoids the "long-lived span across processes" problem: you get one
-clean, complete trace per session with accurate timings.
+clean, complete trace per session with accurate timings and call relationships.
 
 ### Utility commands
 
@@ -812,6 +835,6 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 Built for the 100x community.
 
-Package name: `claude_telemetry` CLI name: `claudia`
+Package name: `claude2sunfire` CLI names: `claudia` / `claude2sunfire` / `claude2sunfire-hook`
 
 Based on OpenTelemetry standards. Enhanced Logfire integration when available.

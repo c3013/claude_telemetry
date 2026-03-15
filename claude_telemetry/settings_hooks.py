@@ -12,9 +12,24 @@ persisted in a JSON file under a user-specific cache directory
 (``~/.cache/claude_telemetry/sessions/``).
 
 Data-collection hooks (``user-prompt-submit``, ``pre-tool-use``,
-``post-tool-use``, ``message-complete``, ``pre-compact``) simply append
-event records to the state file.  The ``stop`` hook reads the complete state
-and exports one OTel session span with all events attached, then cleans up.
+``post-tool-use``, ``message-complete``, ``pre-compact``,
+``subagent-stop``, ``notification``) append event records to the state file.
+The ``stop`` hook reads the complete state and exports a full OTel trace
+with proper parent-child span relationships, then cleans up.
+
+Trace hierarchy
+---------------
+The exported trace reflects the actual call structure of the session::
+
+    claude.session (root)
+    ├── 👤 Turn 1: <prompt preview>
+    │   ├── 🔧 Bash: echo hello
+    │   └── 🔧 Read: /path/to/file
+    ├── 👤 Turn 2: <next prompt>
+    │   └── 🔧 Write: /path/to/output
+    ├── 🗜️ Context compaction          (PreCompact)
+    ├── 🔔 Notification: <message>      (Notification)
+    └── 🤖 Subagent completed           (SubagentStop)
 
 Quick-start
 -----------
@@ -50,6 +65,22 @@ Quick-start
            "Stop": [
              {"hooks": [{"type": "command",
                          "command": "claude2sunfire-hook stop"}]}
+           ],
+           "MessageComplete": [
+             {"hooks": [{"type": "command",
+                         "command": "claude2sunfire-hook message-complete"}]}
+           ],
+           "PreCompact": [
+             {"hooks": [{"type": "command",
+                         "command": "claude2sunfire-hook pre-compact"}]}
+           ],
+           "SubagentStop": [
+             {"hooks": [{"type": "command",
+                         "command": "claude2sunfire-hook subagent-stop"}]}
+           ],
+           "Notification": [
+             {"hooks": [{"type": "command",
+                         "command": "claude2sunfire-hook notification"}]}
            ]
          }
        }
@@ -185,6 +216,11 @@ def _read_stdin_json() -> dict:
     return json.loads(raw)
 
 
+def _ts_ns(timestamp: float) -> int:
+    """Convert a float POSIX timestamp (seconds) to integer nanoseconds for OTel."""
+    return int(timestamp * 1_000_000_000)
+
+
 # ---------------------------------------------------------------------------
 # OTel export (used by the Stop hook)
 # ---------------------------------------------------------------------------
@@ -192,11 +228,21 @@ def _read_stdin_json() -> dict:
 
 def export_session_trace(state: dict, stop_reason: str = "end_turn") -> None:
     """
-    Create and export a single OTel session span from persisted state.
+    Create and export a hierarchical OTel trace from persisted session state.
+
+    The trace reflects the actual call structure of the session:
+
+    * **Root span** – the whole session (``claude.session``).
+    * **Turn spans** – one child per user-prompt → message-complete cycle.
+    * **Tool spans** – children of the enclosing turn, matched by
+      ``tool_use_id`` so that start/end times are accurate.
+    * **Compaction / notification / subagent spans** – direct children of
+      the session span.
 
     This is called by the ``stop`` hook command after the Claude Code session
-    ends.  It reconstructs the complete session timeline from the accumulated
-    event records and exports one root span with child events attached.
+    ends.  Spans are constructed retroactively using explicit OTel
+    ``start_time`` / ``end_time`` timestamps so the hierarchy is correct
+    even though each hook fired in a separate process.
 
     Args:
         state: Session state dict loaded from the state file.
@@ -209,15 +255,20 @@ def export_session_trace(state: dict, stop_reason: str = "end_turn") -> None:
     metrics = state.get("metrics", {})
     events = state.get("events", [])
     start_time = state.get("start_time", time.time())
+    stop_time = state.get("stop_time", time.time())
 
     # Build a human-readable span title from the prompt
     prompt_preview = (prompt[:60] + "...") if len(prompt) > 60 else prompt
     span_title = f"🤖 {prompt_preview}" if prompt else "Claude Session"
 
-    tracer = trace.get_tracer("claude-telemetry")
+    tracer = trace.get_tracer("claude2sunfire")
 
-    with tracer.start_as_current_span(
+    # ------------------------------------------------------------------
+    # Root session span – encompasses the entire session timeline
+    # ------------------------------------------------------------------
+    session_span = tracer.start_span(
         span_title,
+        start_time=_ts_ns(start_time),
         attributes={
             "prompt": prompt,
             "session_id": session_id,
@@ -231,55 +282,156 @@ def export_session_trace(state: dict, stop_reason: str = "end_turn") -> None:
             "turns": metrics.get("turns", 0),
             "stop_reason": stop_reason,
         },
-    ) as session_span:
-        # Replay collected events in chronological order
-        for ev in events:
-            ev_type = ev.get("type")
+    )
+    session_ctx = trace.set_span_in_context(session_span)
 
-            if ev_type == "user_prompt_submit":
-                session_span.add_event(
-                    "👤 User prompt submitted",
-                    {"prompt": ev.get("prompt", "")},
-                )
+    # ------------------------------------------------------------------
+    # Replay events to build child spans in chronological order
+    # ------------------------------------------------------------------
+    # Maps tool_use_id → open tool span still awaiting post_tool_use
+    open_tools: dict = {}
+    current_turn_span = None
+    current_turn_ctx = None
+    turn_idx = 0
 
-            elif ev_type == "pre_tool_use":
-                tool_name = ev.get("tool_name", "unknown")
-                tool_input = ev.get("tool_input", {})
-                tool_title = create_tool_title(tool_name, tool_input)
-                event_data = create_event_data(tool_name, tool_input)
-                session_span.add_event(f"🔧 Tool started: {tool_title}", event_data)
+    def _parent_ctx():
+        """Return the most specific open context (turn if active, else session)."""
+        return current_turn_ctx if current_turn_ctx is not None else session_ctx
 
-            elif ev_type == "post_tool_use":
-                tool_name = ev.get("tool_name", "unknown")
-                tool_response = ev.get("tool_response")
-                completion_title = create_completion_title(tool_name, tool_response)
+    for ev in events:
+        ev_type = ev.get("type", "")
+        ev_ts = ev.get("timestamp", stop_time)
+
+        if ev_type == "user_prompt_submit":
+            # Close any turn that never received a message_complete
+            if current_turn_span is not None:
+                current_turn_span.end(end_time=_ts_ns(ev_ts))
+                current_turn_span = None
+                current_turn_ctx = None
+
+            turn_idx += 1
+            p = ev.get("prompt", "")
+            preview = (p[:50] + "...") if len(p) > 50 else p
+            label = f"👤 Turn {turn_idx}: {preview}" if preview else f"👤 Turn {turn_idx}"
+            current_turn_span = tracer.start_span(
+                label,
+                context=session_ctx,
+                start_time=_ts_ns(ev_ts),
+                attributes={
+                    "turn.index": turn_idx,
+                    "turn.prompt": p,
+                },
+            )
+            current_turn_ctx = trace.set_span_in_context(current_turn_span)
+
+        elif ev_type == "pre_tool_use":
+            tool_name = ev.get("tool_name", "unknown")
+            tool_input = ev.get("tool_input", {})
+            tool_use_id = ev.get("tool_use_id", "")
+            tool_title = create_tool_title(tool_name, tool_input)
+            event_data = create_event_data(tool_name, tool_input)
+
+            tool_span = tracer.start_span(
+                f"🔧 {tool_title}",
+                context=_parent_ctx(),
+                start_time=_ts_ns(ev_ts),
+                attributes={
+                    "tool_name": tool_name,
+                    **{
+                        k: v
+                        for k, v in event_data.items()
+                        if isinstance(v, (str, int, float, bool))
+                    },
+                },
+            )
+            if tool_use_id:
+                open_tools[tool_use_id] = tool_span
+            else:
+                # No ID to correlate with post_tool_use – treat as instant event
+                tool_span.end(end_time=_ts_ns(ev_ts))
+
+        elif ev_type == "post_tool_use":
+            tool_use_id = ev.get("tool_use_id") or ""
+            tool_name = ev.get("tool_name", "unknown")
+            tool_response = ev.get("tool_response")
+
+            tool_span = open_tools.pop(tool_use_id, None)
+            if tool_span is not None:
                 event_data = {"tool_name": tool_name}
                 add_response_to_event_data(event_data, tool_response)
-                session_span.add_event(
-                    f"✅ Tool completed: {completion_title}", event_data
-                )
+                for k, v in event_data.items():
+                    if isinstance(v, (str, int, float, bool)):
+                        tool_span.set_attribute(k, v)
+                tool_span.end(end_time=_ts_ns(ev_ts))
 
-            elif ev_type == "message_complete":
-                session_span.add_event(
-                    "Turn completed",
-                    {
-                        "input_tokens": ev.get("input_tokens", 0),
-                        "output_tokens": ev.get("output_tokens", 0),
-                    },
+        elif ev_type == "message_complete":
+            in_tok = ev.get("input_tokens", 0)
+            out_tok = ev.get("output_tokens", 0)
+            if current_turn_span is not None:
+                current_turn_span.set_attribute(
+                    "gen_ai.usage.input_tokens", in_tok
                 )
-
-            elif ev_type == "pre_compact":
-                session_span.add_event(
-                    "Context compaction",
-                    {
-                        "trigger": ev.get("trigger", "unknown"),
-                        "has_custom_instructions": ev.get(
-                            "has_custom_instructions", False
-                        ),
-                    },
+                current_turn_span.set_attribute(
+                    "gen_ai.usage.output_tokens", out_tok
                 )
+                current_turn_span.end(end_time=_ts_ns(ev_ts))
+                current_turn_span = None
+                current_turn_ctx = None
 
-        session_span.add_event("🎉 Completed", {"stop_reason": stop_reason})
+        elif ev_type == "pre_compact":
+            compact_span = tracer.start_span(
+                "🗜️ Context compaction",
+                context=session_ctx,
+                start_time=_ts_ns(ev_ts),
+                attributes={
+                    "compact.trigger": ev.get("trigger", "unknown"),
+                    "compact.has_custom_instructions": ev.get(
+                        "has_custom_instructions", False
+                    ),
+                },
+            )
+            compact_span.end(end_time=_ts_ns(ev_ts))
+
+        elif ev_type == "notification":
+            msg = ev.get("message", "")
+            notif_span = tracer.start_span(
+                f"🔔 {msg[:60]}" if msg else "🔔 Notification",
+                context=session_ctx,
+                start_time=_ts_ns(ev_ts),
+                attributes={
+                    "notification.message": msg,
+                    "notification.level": ev.get("level", "info"),
+                    "notification.title": ev.get("title", ""),
+                },
+            )
+            notif_span.end(end_time=_ts_ns(ev_ts))
+
+        elif ev_type == "subagent_stop":
+            sub_span = tracer.start_span(
+                "🤖 Subagent completed",
+                context=session_ctx,
+                start_time=_ts_ns(ev_ts),
+                attributes={
+                    "subagent.session_id": ev.get(
+                        "subagent_session_id", "unknown"
+                    ),
+                    "subagent.stop_reason": ev.get("stop_reason", "end_turn"),
+                    "gen_ai.usage.input_tokens": ev.get("input_tokens", 0),
+                    "gen_ai.usage.output_tokens": ev.get("output_tokens", 0),
+                },
+            )
+            sub_span.end(end_time=_ts_ns(ev_ts))
+
+    # Close any tool spans whose post_tool_use never arrived (interrupted sessions)
+    for orphan_span in open_tools.values():
+        orphan_span.end(end_time=_ts_ns(stop_time))
+
+    # Close any open turn span (no message_complete before stop)
+    if current_turn_span is not None:
+        current_turn_span.end(end_time=_ts_ns(stop_time))
+
+    # Close root session span
+    session_span.end(end_time=_ts_ns(stop_time))
 
     # Force-flush then shut down so spans are fully exported before the
     # process exits.  BatchSpanProcessor uses a daemon worker thread; without
@@ -291,7 +443,7 @@ def export_session_trace(state: dict, stop_reason: str = "end_turn") -> None:
     if hasattr(provider, "shutdown"):
         provider.shutdown()
 
-    duration = time.time() - start_time
+    duration = stop_time - start_time
     logger.info(
         f"✅ Session traced | "
         f"{metrics.get('input_tokens', 0)} in, "
@@ -460,20 +612,84 @@ def cmd_pre_compact() -> None:
     logger.debug(f"Hook: PreCompact for session {session_id}")
 
 
+@hook_app.command("subagent-stop")
+def cmd_subagent_stop() -> None:
+    """
+    Handle SubagentStop hook - record subagent completion event.
+
+    Claude Code calls this when a spawned subagent finishes responding.
+    """
+    event = _read_stdin_json()
+    session_id = event.get("session_id") or str(uuid.uuid4())
+    stop_reason = event.get("stop_reason", "end_turn")
+
+    # Token usage may be nested under a "usage" key or at the top level
+    usage = event.get("usage") or {}
+    input_tokens = usage.get("input_tokens", 0) or event.get("input_tokens", 0)
+    output_tokens = usage.get("output_tokens", 0) or event.get("output_tokens", 0)
+
+    state = _load_state(session_id)
+    state["events"].append(
+        {
+            "type": "subagent_stop",
+            "timestamp": time.time(),
+            "subagent_session_id": event.get("subagent_session_id", session_id),
+            "stop_reason": stop_reason,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        }
+    )
+
+    _save_state(session_id, state)
+    logger.debug(f"Hook: SubagentStop for session {session_id}")
+
+
+@hook_app.command("notification")
+def cmd_notification() -> None:
+    """
+    Handle Notification hook - record a user notification event.
+
+    Claude Code calls this when it emits a notification to the user
+    (e.g. permission requests, status updates).
+    """
+    event = _read_stdin_json()
+    session_id = event.get("session_id") or str(uuid.uuid4())
+    message = event.get("message", "")
+    title = event.get("title", "")
+    level = event.get("level", "info")
+
+    state = _load_state(session_id)
+    state["events"].append(
+        {
+            "type": "notification",
+            "timestamp": time.time(),
+            "message": message,
+            "title": title,
+            "level": level,
+        }
+    )
+
+    _save_state(session_id, state)
+    logger.debug(f"Hook: Notification for session {session_id}: {message[:60]}")
+
+
 @hook_app.command("stop")
 def cmd_stop() -> None:
     """
     Handle Stop hook - export the complete OTel trace for this session.
 
     Claude Code calls this when the agent stops.  This command reads the
-    accumulated session state, creates a single OTel span with all events
-    attached, exports it to the configured backend, and cleans up.
+    accumulated session state, constructs a hierarchical OTel trace with
+    proper parent-child span relationships, exports it to the configured
+    backend, and cleans up.
     """
     event = _read_stdin_json()
     session_id = event.get("session_id") or str(uuid.uuid4())
     stop_reason = event.get("stop_reason", "end_turn")
 
     state = _load_state(session_id)
+    # Record the stop time so export_session_trace can use it as the session end
+    state["stop_time"] = time.time()
     export_session_trace(state, stop_reason)
     _clear_state(session_id)
 
@@ -519,6 +735,46 @@ _HOOK_CONFIG = {
                 {
                     "type": "command",
                     "command": "claude2sunfire-hook stop",
+                }
+            ]
+        }
+    ],
+    "MessageComplete": [
+        {
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": "claude2sunfire-hook message-complete",
+                }
+            ]
+        }
+    ],
+    "PreCompact": [
+        {
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": "claude2sunfire-hook pre-compact",
+                }
+            ]
+        }
+    ],
+    "SubagentStop": [
+        {
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": "claude2sunfire-hook subagent-stop",
+                }
+            ]
+        }
+    ],
+    "Notification": [
+        {
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": "claude2sunfire-hook notification",
                 }
             ]
         }

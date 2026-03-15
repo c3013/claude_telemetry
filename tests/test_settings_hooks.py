@@ -16,10 +16,12 @@ from claude_telemetry.settings_hooks import (
     _save_state,
     _state_file,
     cmd_message_complete,
+    cmd_notification,
     cmd_post_tool_use,
     cmd_pre_compact,
     cmd_pre_tool_use,
     cmd_stop,
+    cmd_subagent_stop,
     cmd_user_prompt_submit,
     export_session_trace,
 )
@@ -47,9 +49,11 @@ def sample_session_id():
 
 @pytest.fixture
 def minimal_state(sample_session_id):
+    now = time.time()
     return {
         "session_id": sample_session_id,
-        "start_time": time.time() - 10,
+        "start_time": now - 10,
+        "stop_time": now,
         "prompt": "Write a hello world program",
         "model": "claude-opus-4-5",
         "metrics": {
@@ -62,26 +66,26 @@ def minimal_state(sample_session_id):
         "events": [
             {
                 "type": "user_prompt_submit",
-                "timestamp": time.time() - 10,
+                "timestamp": now - 10,
                 "prompt": "Write a hello world program",
             },
             {
                 "type": "pre_tool_use",
-                "timestamp": time.time() - 8,
+                "timestamp": now - 8,
                 "tool_name": "Bash",
                 "tool_input": {"command": "echo hello"},
                 "tool_use_id": "tool-001",
             },
             {
                 "type": "post_tool_use",
-                "timestamp": time.time() - 7,
+                "timestamp": now - 7,
                 "tool_name": "Bash",
                 "tool_response": {"stdout": "hello", "stderr": "", "returnCode": 0},
                 "tool_use_id": "tool-001",
             },
             {
                 "type": "message_complete",
-                "timestamp": time.time() - 5,
+                "timestamp": now - 5,
                 "input_tokens": 150,
                 "output_tokens": 80,
             },
@@ -339,6 +343,90 @@ class TestHookCommands:
         assert ev["trigger"] == "token_limit"
         assert ev["has_custom_instructions"] is True
 
+    def test_subagent_stop_appends_event(
+        self, tmp_state_dir, monkeypatch, sample_session_id
+    ):
+        self._invoke(
+            cmd_subagent_stop,
+            {
+                "session_id": sample_session_id,
+                "subagent_session_id": "sub-abc",
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 30, "output_tokens": 15},
+            },
+            tmp_state_dir,
+            monkeypatch,
+        )
+
+        state = _load_state(sample_session_id)
+        ev = state["events"][0]
+        assert ev["type"] == "subagent_stop"
+        assert ev["subagent_session_id"] == "sub-abc"
+        assert ev["stop_reason"] == "end_turn"
+        assert ev["input_tokens"] == 30
+        assert ev["output_tokens"] == 15
+
+    def test_subagent_stop_handles_flat_token_fields(
+        self, tmp_state_dir, monkeypatch, sample_session_id
+    ):
+        """Token counts may be at the top level instead of under 'usage'."""
+        self._invoke(
+            cmd_subagent_stop,
+            {
+                "session_id": sample_session_id,
+                "input_tokens": 25,
+                "output_tokens": 10,
+            },
+            tmp_state_dir,
+            monkeypatch,
+        )
+
+        state = _load_state(sample_session_id)
+        ev = state["events"][0]
+        assert ev["input_tokens"] == 25
+        assert ev["output_tokens"] == 10
+
+    def test_notification_appends_event(
+        self, tmp_state_dir, monkeypatch, sample_session_id
+    ):
+        self._invoke(
+            cmd_notification,
+            {
+                "session_id": sample_session_id,
+                "message": "Running linter...",
+                "title": "Lint",
+                "level": "info",
+            },
+            tmp_state_dir,
+            monkeypatch,
+        )
+
+        state = _load_state(sample_session_id)
+        ev = state["events"][0]
+        assert ev["type"] == "notification"
+        assert ev["message"] == "Running linter..."
+        assert ev["title"] == "Lint"
+        assert ev["level"] == "info"
+
+    def test_stop_stores_stop_time_before_export(
+        self, tmp_state_dir, monkeypatch, sample_session_id, minimal_state
+    ):
+        """cmd_stop must set state['stop_time'] before calling export_session_trace."""
+        _save_state(sample_session_id, minimal_state)
+
+        captured = {}
+        with patch(
+            "claude_telemetry.settings_hooks.export_session_trace"
+        ) as mock_export:
+            mock_export.side_effect = lambda state, *a, **kw: captured.update(state)
+            monkeypatch.setattr(
+                "sys.stdin",
+                StringIO(json.dumps({"session_id": sample_session_id, "stop_reason": "end_turn"})),
+            )
+            cmd_stop()
+
+        assert "stop_time" in captured, "stop_time must be stored before export"
+
     def test_stop_exports_trace_and_clears_state(
         self, tmp_state_dir, monkeypatch, sample_session_id, minimal_state
     ):
@@ -377,17 +465,12 @@ class TestHookCommands:
 
 class TestExportSessionTrace:
     def test_creates_otel_span(self, mocker, monkeypatch, minimal_state):
-        """export_session_trace should create a span with expected attributes."""
+        """export_session_trace should create a root span with expected attributes."""
         monkeypatch.setenv("CLAUDE_TELEMETRY_DEBUG", "1")
 
         mock_span = MagicMock()
         mock_tracer = MagicMock()
-        mock_tracer.start_as_current_span.return_value.__enter__ = lambda s, *a: (
-            mock_span
-        )
-        mock_tracer.start_as_current_span.return_value.__exit__ = (
-            lambda s, *a: False
-        )
+        mock_tracer.start_span.return_value = mock_span
 
         mocker.patch(
             "claude_telemetry.settings_hooks.trace.get_tracer",
@@ -397,9 +480,10 @@ class TestExportSessionTrace:
 
         export_session_trace(minimal_state, stop_reason="end_turn")
 
-        mock_tracer.start_as_current_span.assert_called_once()
-        call_kwargs = mock_tracer.start_as_current_span.call_args[1]
-        attrs = call_kwargs["attributes"]
+        # The very first start_span call creates the root session span
+        assert mock_tracer.start_span.called
+        first_call = mock_tracer.start_span.call_args_list[0]
+        attrs = first_call[1]["attributes"]
         assert attrs["session_id"] == minimal_state["session_id"]
         assert attrs["gen_ai.usage.input_tokens"] == 150
         assert attrs["gen_ai.usage.output_tokens"] == 80
@@ -411,12 +495,7 @@ class TestExportSessionTrace:
         monkeypatch.setenv("CLAUDE_TELEMETRY_DEBUG", "1")
 
         mock_tracer = MagicMock()
-        mock_tracer.start_as_current_span.return_value.__enter__ = lambda s, *a: (
-            MagicMock()
-        )
-        mock_tracer.start_as_current_span.return_value.__exit__ = (
-            lambda s, *a: False
-        )
+        mock_tracer.start_span.return_value = MagicMock()
 
         mocker.patch(
             "claude_telemetry.settings_hooks.trace.get_tracer",
@@ -426,7 +505,7 @@ class TestExportSessionTrace:
 
         export_session_trace(minimal_state)
 
-        span_title = mock_tracer.start_as_current_span.call_args[0][0]
+        span_title = mock_tracer.start_span.call_args_list[0][0][0]
         assert "Write a hello world" in span_title
 
     def test_long_prompt_is_truncated_in_title(self, mocker, monkeypatch):
@@ -434,12 +513,7 @@ class TestExportSessionTrace:
         monkeypatch.setenv("CLAUDE_TELEMETRY_DEBUG", "1")
 
         mock_tracer = MagicMock()
-        mock_tracer.start_as_current_span.return_value.__enter__ = lambda s, *a: (
-            MagicMock()
-        )
-        mock_tracer.start_as_current_span.return_value.__exit__ = (
-            lambda s, *a: False
-        )
+        mock_tracer.start_span.return_value = MagicMock()
 
         mocker.patch(
             "claude_telemetry.settings_hooks.trace.get_tracer",
@@ -450,6 +524,7 @@ class TestExportSessionTrace:
         state = {
             "session_id": "s1",
             "start_time": time.time(),
+            "stop_time": time.time(),
             "prompt": "A" * 100,
             "model": "unknown",
             "metrics": {
@@ -463,23 +538,16 @@ class TestExportSessionTrace:
         }
         export_session_trace(state)
 
-        span_title = mock_tracer.start_as_current_span.call_args[0][0]
+        span_title = mock_tracer.start_span.call_args_list[0][0][0]
         assert "..." in span_title
 
-    def test_events_are_replayed_as_span_events(
-        self, mocker, monkeypatch, minimal_state
-    ):
-        """All collected events should be added to the span."""
+    def test_events_create_child_spans(self, mocker, monkeypatch, minimal_state):
+        """Each event category should produce a dedicated child span."""
         monkeypatch.setenv("CLAUDE_TELEMETRY_DEBUG", "1")
 
         mock_span = MagicMock()
         mock_tracer = MagicMock()
-        mock_tracer.start_as_current_span.return_value.__enter__ = lambda s, *a: (
-            mock_span
-        )
-        mock_tracer.start_as_current_span.return_value.__exit__ = (
-            lambda s, *a: False
-        )
+        mock_tracer.start_span.return_value = mock_span
 
         mocker.patch(
             "claude_telemetry.settings_hooks.trace.get_tracer",
@@ -489,25 +557,20 @@ class TestExportSessionTrace:
 
         export_session_trace(minimal_state)
 
-        # Should have an add_event call for each event type + the "Completed" event
-        event_names = [call[0][0] for call in mock_span.add_event.call_args_list]
-        assert any("User prompt" in n for n in event_names)
-        assert any("Tool started" in n for n in event_names)
-        assert any("Tool completed" in n for n in event_names)
-        assert any("Turn completed" in n for n in event_names)
-        assert any("Completed" in n for n in event_names)
+        span_names = [c[0][0] for c in mock_tracer.start_span.call_args_list]
+        # Session root span (contains emoji or "Claude Session")
+        assert any("🤖" in n or "Claude Session" in n for n in span_names)
+        # Turn span
+        assert any("Turn" in n or "👤" in n for n in span_names)
+        # Tool span
+        assert any("🔧" in n for n in span_names)
 
     def test_empty_session_does_not_crash(self, mocker, monkeypatch):
         """export_session_trace should not crash for an empty session."""
         monkeypatch.setenv("CLAUDE_TELEMETRY_DEBUG", "1")
 
         mock_tracer = MagicMock()
-        mock_tracer.start_as_current_span.return_value.__enter__ = lambda s, *a: (
-            MagicMock()
-        )
-        mock_tracer.start_as_current_span.return_value.__exit__ = (
-            lambda s, *a: False
-        )
+        mock_tracer.start_span.return_value = MagicMock()
 
         mocker.patch(
             "claude_telemetry.settings_hooks.trace.get_tracer",
@@ -525,12 +588,7 @@ class TestExportSessionTrace:
         monkeypatch.setenv("CLAUDE_TELEMETRY_DEBUG", "1")
 
         mock_tracer = MagicMock()
-        mock_tracer.start_as_current_span.return_value.__enter__ = lambda s, *a: (
-            MagicMock()
-        )
-        mock_tracer.start_as_current_span.return_value.__exit__ = (
-            lambda s, *a: False
-        )
+        mock_tracer.start_span.return_value = MagicMock()
 
         mock_provider = MagicMock()
         call_order = []
@@ -559,6 +617,184 @@ class TestExportSessionTrace:
             "force_flush() must be called before shutdown()"
         )
 
+    def test_span_hierarchy_session_turn_tool(self, mocker, monkeypatch, minimal_state):
+        """Tool spans must be children of the turn span, which is a child of session."""
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+
+        monkeypatch.setenv("CLAUDE_TELEMETRY_DEBUG", "1")
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        test_tracer = provider.get_tracer("test")
+
+        mocker.patch("claude_telemetry.settings_hooks.configure_telemetry")
+        mocker.patch(
+            "claude_telemetry.settings_hooks.trace.get_tracer",
+            return_value=test_tracer,
+        )
+        mocker.patch(
+            "claude_telemetry.settings_hooks.trace.get_tracer_provider",
+            return_value=provider,
+        )
+
+        export_session_trace(minimal_state)
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) >= 3, "Expected at least session + turn + tool spans"
+
+        # The session span is the only root span (no parent)
+        session_spans = [s for s in spans if s.parent is None]
+        turn_spans = [s for s in spans if "👤" in s.name or "Turn" in s.name]
+        tool_spans = [s for s in spans if "🔧" in s.name]
+
+        assert len(session_spans) == 1, f"Expected 1 session span, got {len(session_spans)}"
+        assert len(turn_spans) >= 1, "Expected at least 1 turn span"
+        assert len(tool_spans) >= 1, "Expected at least 1 tool span"
+
+        session_span = session_spans[0]
+        turn_span = turn_spans[0]
+        tool_span = tool_spans[0]
+
+        # Turn is a direct child of session
+        assert turn_span.parent is not None
+        assert turn_span.parent.span_id == session_span.context.span_id, (
+            "Turn span must be a child of the session span"
+        )
+
+        # Tool is a child of the turn (not directly of session)
+        assert tool_span.parent is not None
+        assert tool_span.parent.span_id == turn_span.context.span_id, (
+            "Tool span must be a child of the turn span, not directly of session"
+        )
+
+    def test_tool_matched_by_tool_use_id(self, mocker, monkeypatch):
+        """pre_tool_use and post_tool_use with matching tool_use_id produce one span."""
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+
+        monkeypatch.setenv("CLAUDE_TELEMETRY_DEBUG", "1")
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        test_tracer = provider.get_tracer("test")
+
+        mocker.patch("claude_telemetry.settings_hooks.configure_telemetry")
+        mocker.patch(
+            "claude_telemetry.settings_hooks.trace.get_tracer",
+            return_value=test_tracer,
+        )
+        mocker.patch(
+            "claude_telemetry.settings_hooks.trace.get_tracer_provider",
+            return_value=provider,
+        )
+
+        now = time.time()
+        state = {
+            "session_id": "s-tool",
+            "start_time": now - 5,
+            "stop_time": now,
+            "prompt": "Test",
+            "model": "claude-opus-4-5",
+            "metrics": {"input_tokens": 0, "output_tokens": 0, "tools_used": 1, "turns": 1},
+            "tools_used": ["Bash"],
+            "events": [
+                {"type": "user_prompt_submit", "timestamp": now - 5, "prompt": "Test"},
+                {
+                    "type": "pre_tool_use",
+                    "timestamp": now - 3,
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "echo hi"},
+                    "tool_use_id": "tid-42",
+                },
+                {
+                    "type": "post_tool_use",
+                    "timestamp": now - 2,
+                    "tool_name": "Bash",
+                    "tool_response": "hi",
+                    "tool_use_id": "tid-42",
+                },
+                {"type": "message_complete", "timestamp": now - 1, "input_tokens": 10, "output_tokens": 5},
+            ],
+        }
+        export_session_trace(state)
+
+        tool_spans = [s for s in exporter.get_finished_spans() if "🔧" in s.name]
+        assert len(tool_spans) == 1, (
+            f"Expected exactly 1 tool span from matched pair, got {len(tool_spans)}"
+        )
+
+    def test_compaction_and_notification_are_session_children(
+        self, mocker, monkeypatch
+    ):
+        """PreCompact and Notification spans must be direct children of the session."""
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+
+        monkeypatch.setenv("CLAUDE_TELEMETRY_DEBUG", "1")
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        test_tracer = provider.get_tracer("test")
+
+        mocker.patch("claude_telemetry.settings_hooks.configure_telemetry")
+        mocker.patch(
+            "claude_telemetry.settings_hooks.trace.get_tracer",
+            return_value=test_tracer,
+        )
+        mocker.patch(
+            "claude_telemetry.settings_hooks.trace.get_tracer_provider",
+            return_value=provider,
+        )
+
+        now = time.time()
+        state = {
+            "session_id": "s-extra",
+            "start_time": now - 10,
+            "stop_time": now,
+            "prompt": "Test",
+            "model": "claude-opus-4-5",
+            "metrics": {"input_tokens": 0, "output_tokens": 0, "tools_used": 0, "turns": 0},
+            "tools_used": [],
+            "events": [
+                {"type": "pre_compact", "timestamp": now - 8, "trigger": "auto", "has_custom_instructions": False},
+                {"type": "notification", "timestamp": now - 5, "message": "Running tests", "level": "info", "title": ""},
+                {"type": "subagent_stop", "timestamp": now - 3, "subagent_session_id": "sub-1", "stop_reason": "end_turn", "input_tokens": 20, "output_tokens": 10},
+            ],
+        }
+        export_session_trace(state)
+
+        spans = exporter.get_finished_spans()
+        # The session span is the only root span (no parent)
+        session_spans = [s for s in spans if s.parent is None]
+        compact_spans = [s for s in spans if "🗜️" in s.name]
+        notif_spans = [s for s in spans if "🔔" in s.name]
+        sub_spans = [s for s in spans if "Subagent" in s.name]
+
+        assert len(session_spans) == 1
+        assert len(compact_spans) == 1
+        assert len(notif_spans) == 1
+        assert len(sub_spans) == 1
+
+        session_id = session_spans[0].context.span_id
+        for child_span in [compact_spans[0], notif_spans[0], sub_spans[0]]:
+            assert child_span.parent is not None
+            assert child_span.parent.span_id == session_id, (
+                f"{child_span.name!r} must be a direct child of the session span"
+            )
+
 
 # ---------------------------------------------------------------------------
 # Install command
@@ -573,7 +809,16 @@ class TestInstallInto:
         assert settings_path.exists()
         settings = json.loads(settings_path.read_text())
         assert "hooks" in settings
-        for event in ("UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"):
+        for event in (
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "Stop",
+            "MessageComplete",
+            "PreCompact",
+            "SubagentStop",
+            "Notification",
+        ):
             assert event in settings["hooks"]
 
     def test_merges_into_existing_settings(self, tmp_path):
