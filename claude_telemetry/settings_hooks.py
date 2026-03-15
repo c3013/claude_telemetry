@@ -61,6 +61,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Annotated
 
@@ -280,7 +281,7 @@ def cmd_user_prompt_submit() -> None:
     Claude Code calls this when the user submits a prompt.
     """
     event = _read_stdin_json()
-    session_id = event.get("session_id", "unknown")
+    session_id = event.get("session_id") or str(uuid.uuid4())
     prompt = event.get("prompt", "")
 
     state = _load_state(session_id)
@@ -311,7 +312,7 @@ def cmd_pre_tool_use() -> None:
     Claude Code calls this before each tool execution.
     """
     event = _read_stdin_json()
-    session_id = event.get("session_id", "unknown")
+    session_id = event.get("session_id") or str(uuid.uuid4())
     tool_name = event.get("tool_name", "unknown")
     tool_input = event.get("tool_input", {})
     tool_use_id = event.get("tool_use_id", f"{tool_name}_{time.time()}")
@@ -343,7 +344,7 @@ def cmd_post_tool_use() -> None:
     Claude Code calls this after each tool execution.
     """
     event = _read_stdin_json()
-    session_id = event.get("session_id", "unknown")
+    session_id = event.get("session_id") or str(uuid.uuid4())
     tool_name = event.get("tool_name", "unknown")
     tool_response = event.get("tool_response")
     tool_use_id = event.get("tool_use_id")
@@ -371,7 +372,7 @@ def cmd_message_complete() -> None:
     Claude Code calls this when an assistant message is complete.
     """
     event = _read_stdin_json()
-    session_id = event.get("session_id", "unknown")
+    session_id = event.get("session_id") or str(uuid.uuid4())
 
     # Token usage may be nested under a "usage" key or at the top level
     usage = event.get("usage") or {}
@@ -408,7 +409,7 @@ def cmd_pre_compact() -> None:
     Claude Code calls this before compacting the context window.
     """
     event = _read_stdin_json()
-    session_id = event.get("session_id", "unknown")
+    session_id = event.get("session_id") or str(uuid.uuid4())
     trigger = event.get("trigger", "unknown")
     has_custom = event.get("custom_instructions") is not None
 
@@ -436,7 +437,7 @@ def cmd_stop() -> None:
     attached, exports it to the configured backend, and cleans up.
     """
     event = _read_stdin_json()
-    session_id = event.get("session_id", "unknown")
+    session_id = event.get("session_id") or str(uuid.uuid4())
     stop_reason = event.get("stop_reason", "end_turn")
 
     state = _load_state(session_id)

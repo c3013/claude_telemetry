@@ -2,6 +2,7 @@
 
 import json
 import time
+import uuid
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
@@ -151,6 +152,30 @@ class TestHookCommands:
         assert state["prompt"] == "Hello Claude"
         assert len(state["events"]) == 1
         assert state["events"][0]["type"] == "user_prompt_submit"
+
+    def test_user_prompt_submit_generates_uuid_when_session_id_missing(
+        self, tmp_state_dir, monkeypatch
+    ):
+        """When no session_id is provided, a UUID must be used instead of 'unknown'."""
+        monkeypatch.setattr(
+            "sys.stdin", StringIO(json.dumps({"prompt": "hello claude"}))
+        )
+        cmd_user_prompt_submit()
+
+        # Find the state file that was created - there should be exactly one
+        session_files = list((tmp_state_dir).glob("*.json"))
+        assert len(session_files) == 1, "Expected exactly one session state file"
+
+        state = json.loads(session_files[0].read_text())
+        session_id = state["session_id"]
+
+        # Must not be the literal "unknown"
+        assert session_id != "unknown", (
+            f"session_id should be a UUID, got {session_id!r}"
+        )
+        # Must be a valid UUID
+        uuid.UUID(session_id)  # raises ValueError if not a valid UUID
+        assert state["prompt"] == "hello claude"
 
     def test_user_prompt_submit_captures_model(
         self, tmp_state_dir, monkeypatch, sample_session_id
