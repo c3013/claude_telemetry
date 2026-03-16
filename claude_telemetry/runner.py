@@ -81,9 +81,6 @@ async def run_agent_with_telemetry(
         ],
         "PreToolUse": [HookMatcher(matcher=None, hooks=[hooks.on_pre_tool_use])],
         "PostToolUse": [HookMatcher(matcher=None, hooks=[hooks.on_post_tool_use])],
-        "MessageComplete": [
-            HookMatcher(matcher=None, hooks=[hooks.on_message_complete])
-        ],
         "PreCompact": [HookMatcher(matcher=None, hooks=[hooks.on_pre_compact])],
     }
 
@@ -200,9 +197,6 @@ async def run_agent_interactive(  # noqa: PLR0915
             ],
             "PreToolUse": [HookMatcher(matcher=None, hooks=[hooks.on_pre_tool_use])],
             "PostToolUse": [HookMatcher(matcher=None, hooks=[hooks.on_post_tool_use])],
-            "MessageComplete": [
-                HookMatcher(matcher=None, hooks=[hooks.on_message_complete])
-            ],
             "PreCompact": [HookMatcher(matcher=None, hooks=[hooks.on_pre_compact])],
         },
     )

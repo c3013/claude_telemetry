@@ -12,8 +12,8 @@ persisted in a JSON file under a user-specific cache directory
 (``~/.cache/claude_telemetry/sessions/``).
 
 Data-collection hooks (``user-prompt-submit``, ``pre-tool-use``,
-``post-tool-use``, ``message-complete``, ``pre-compact``,
-``subagent-stop``, ``notification``) append event records to the state file.
+``post-tool-use``, ``pre-compact``, ``subagent-stop``, ``notification``)
+append event records to the state file.
 The ``stop`` hook reads the complete state and exports a full OTel trace
 with proper parent-child span relationships, then cleans up.
 
@@ -65,10 +65,6 @@ Quick-start
            "Stop": [
              {"hooks": [{"type": "command",
                          "command": "claude2sunfire-hook stop"}]}
-           ],
-           "MessageComplete": [
-             {"hooks": [{"type": "command",
-                         "command": "claude2sunfire-hook message-complete"}]}
            ],
            "PreCompact": [
              {"hooks": [{"type": "command",
@@ -233,7 +229,7 @@ def export_session_trace(state: dict, stop_reason: str = "end_turn") -> None:
     The trace reflects the actual call structure of the session:
 
     * **Root span** – the whole session (``claude.session``).
-    * **Turn spans** – one child per user-prompt → message-complete cycle.
+    * **Turn spans** – one child per user-prompt, closed at the next turn or at Stop.
     * **Tool spans** – children of the enclosing turn, matched by
       ``tool_use_id`` so that start/end times are accurate.
     * **Compaction / notification / subagent spans** – direct children of
@@ -303,7 +299,7 @@ def export_session_trace(state: dict, stop_reason: str = "end_turn") -> None:
         ev_ts = ev.get("timestamp", stop_time)
 
         if ev_type == "user_prompt_submit":
-            # Close any turn that never received a message_complete
+            # Close any still-open turn span from the previous prompt
             if current_turn_span is not None:
                 current_turn_span.end(end_time=_ts_ns(ev_ts))
                 current_turn_span = None
@@ -364,20 +360,6 @@ def export_session_trace(state: dict, stop_reason: str = "end_turn") -> None:
                         tool_span.set_attribute(k, v)
                 tool_span.end(end_time=_ts_ns(ev_ts))
 
-        elif ev_type == "message_complete":
-            in_tok = ev.get("input_tokens", 0)
-            out_tok = ev.get("output_tokens", 0)
-            if current_turn_span is not None:
-                current_turn_span.set_attribute(
-                    "gen_ai.usage.input_tokens", in_tok
-                )
-                current_turn_span.set_attribute(
-                    "gen_ai.usage.output_tokens", out_tok
-                )
-                current_turn_span.end(end_time=_ts_ns(ev_ts))
-                current_turn_span = None
-                current_turn_ctx = None
-
         elif ev_type == "pre_compact":
             compact_span = tracer.start_span(
                 "🗜️ Context compaction",
@@ -426,7 +408,7 @@ def export_session_trace(state: dict, stop_reason: str = "end_turn") -> None:
     for orphan_span in open_tools.values():
         orphan_span.end(end_time=_ts_ns(stop_time))
 
-    # Close any open turn span (no message_complete before stop)
+    # Close any open turn span (stop arrived before the next user prompt)
     if current_turn_span is not None:
         current_turn_span.end(end_time=_ts_ns(stop_time))
 
@@ -547,43 +529,6 @@ def cmd_post_tool_use() -> None:
 
     _save_state(session_id, state)
     logger.debug(f"Hook: PostToolUse {tool_name} for session {session_id}")
-
-
-@hook_app.command("message-complete")
-def cmd_message_complete() -> None:
-    """
-    Handle MessageComplete hook - update cumulative token counts.
-
-    Claude Code calls this when an assistant message is complete.
-    """
-    event = _read_stdin_json()
-    session_id = event.get("session_id") or str(uuid.uuid4())
-
-    # Token usage may be nested under a "usage" key or at the top level
-    usage = event.get("usage") or {}
-    input_tokens = usage.get("input_tokens", 0) or event.get("input_tokens", 0)
-    output_tokens = usage.get("output_tokens", 0) or event.get("output_tokens", 0)
-
-    state = _load_state(session_id)
-    state["metrics"]["input_tokens"] = (
-        state["metrics"].get("input_tokens", 0) + input_tokens
-    )
-    state["metrics"]["output_tokens"] = (
-        state["metrics"].get("output_tokens", 0) + output_tokens
-    )
-    state["metrics"]["turns"] = state["metrics"].get("turns", 0) + 1
-
-    state["events"].append(
-        {
-            "type": "message_complete",
-            "timestamp": time.time(),
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-        }
-    )
-
-    _save_state(session_id, state)
-    logger.debug(f"Hook: MessageComplete for session {session_id}")
 
 
 @hook_app.command("pre-compact")
@@ -735,16 +680,6 @@ _HOOK_CONFIG = {
                 {
                     "type": "command",
                     "command": "claude2sunfire-hook stop",
-                }
-            ]
-        }
-    ],
-    "MessageComplete": [
-        {
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": "claude2sunfire-hook message-complete",
                 }
             ]
         }

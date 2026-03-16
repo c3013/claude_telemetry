@@ -101,7 +101,6 @@ Claude Code invokes each command as a subprocess, passing JSON on stdin.
 | `user-prompt-submit` | `UserPromptSubmit` | Initialises session state file and opens a turn span |
 | `pre-tool-use` | `PreToolUse` | Records tool start + input |
 | `post-tool-use` | `PostToolUse` | Records tool result |
-| `message-complete` | `MessageComplete` | Accumulates token counts and closes the turn span |
 | `pre-compact` | `PreCompact` | Records context-compaction event |
 | `subagent-stop` | `SubagentStop` | Records subagent completion with token usage |
 | `notification` | `Notification` | Records notification messages emitted by Claude Code |
@@ -124,9 +123,6 @@ Claude Code invokes each command as a subprocess, passing JSON on stdin.
     "Stop": [
       {"hooks": [{"type": "command", "command": "claude2sunfire-hook stop"}]}
     ],
-    "MessageComplete": [
-      {"hooks": [{"type": "command", "command": "claude2sunfire-hook message-complete"}]}
-    ],
     "PreCompact": [
       {"hooks": [{"type": "command", "command": "claude2sunfire-hook pre-compact"}]}
     ],
@@ -146,7 +142,7 @@ The exported trace reflects the actual call structure of your Claude Code sessio
 
 ```
 🤖 <session prompt>                      ← root session span
-├── 👤 Turn 1: write hello world         ← UserPromptSubmit → MessageComplete
+├── 👤 Turn 1: write hello world         ← UserPromptSubmit (closed at next turn or Stop)
 │   ├── 🔧 Bash: echo hello              ← PreToolUse → PostToolUse (matched by tool_use_id)
 │   └── 🔧 Read: /path/to/file
 ├── 👤 Turn 2: add error handling        ← second user prompt

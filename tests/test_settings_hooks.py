@@ -15,7 +15,6 @@ from claude_telemetry.settings_hooks import (
     _load_state,
     _save_state,
     _state_file,
-    cmd_message_complete,
     cmd_notification,
     cmd_post_tool_use,
     cmd_pre_compact,
@@ -82,12 +81,6 @@ def minimal_state(sample_session_id):
                 "tool_name": "Bash",
                 "tool_response": {"stdout": "hello", "stderr": "", "returnCode": 0},
                 "tool_use_id": "tool-001",
-            },
-            {
-                "type": "message_complete",
-                "timestamp": now - 5,
-                "input_tokens": 150,
-                "output_tokens": 80,
             },
         ],
     }
@@ -283,45 +276,6 @@ class TestHookCommands:
         assert ev["type"] == "post_tool_use"
         assert ev["tool_name"] == "Read"
         assert ev["tool_response"]["content"] == "file contents"
-
-    def test_message_complete_updates_token_counts(
-        self, tmp_state_dir, monkeypatch, sample_session_id
-    ):
-        # Two turns
-        for in_tok, out_tok in [(100, 200), (50, 75)]:
-            self._invoke(
-                cmd_message_complete,
-                {
-                    "session_id": sample_session_id,
-                    "usage": {"input_tokens": in_tok, "output_tokens": out_tok},
-                },
-                tmp_state_dir,
-                monkeypatch,
-            )
-
-        state = _load_state(sample_session_id)
-        assert state["metrics"]["input_tokens"] == 150
-        assert state["metrics"]["output_tokens"] == 275
-        assert state["metrics"]["turns"] == 2
-
-    def test_message_complete_handles_flat_token_fields(
-        self, tmp_state_dir, monkeypatch, sample_session_id
-    ):
-        """Token counts may be at the top level instead of under 'usage'."""
-        self._invoke(
-            cmd_message_complete,
-            {
-                "session_id": sample_session_id,
-                "input_tokens": 30,
-                "output_tokens": 60,
-            },
-            tmp_state_dir,
-            monkeypatch,
-        )
-
-        state = _load_state(sample_session_id)
-        assert state["metrics"]["input_tokens"] == 30
-        assert state["metrics"]["output_tokens"] == 60
 
     def test_pre_compact_appends_event(
         self, tmp_state_dir, monkeypatch, sample_session_id
@@ -722,7 +676,6 @@ class TestExportSessionTrace:
                     "tool_response": "hi",
                     "tool_use_id": "tid-42",
                 },
-                {"type": "message_complete", "timestamp": now - 1, "input_tokens": 10, "output_tokens": 5},
             ],
         }
         export_session_trace(state)
@@ -814,7 +767,6 @@ class TestInstallInto:
             "PreToolUse",
             "PostToolUse",
             "Stop",
-            "MessageComplete",
             "PreCompact",
             "SubagentStop",
             "Notification",
