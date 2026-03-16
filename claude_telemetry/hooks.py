@@ -671,47 +671,6 @@ class TelemetryHooks:
 
         return {}
 
-    async def on_message_complete(
-        self,
-        message: Any,
-        ctx: Any,
-    ) -> dict[str, Any]:
-        """Hook called when assistant message is complete - updates token counts."""
-        # Extract token usage
-        if hasattr(message, "usage"):
-            input_tokens = getattr(message.usage, "input_tokens", 0)
-            output_tokens = getattr(message.usage, "output_tokens", 0)
-
-            self.metrics["input_tokens"] += input_tokens
-            self.metrics["output_tokens"] += output_tokens
-            self.metrics["turns"] += 1
-
-            # Update span with cumulative token usage
-            if self.session_span:
-                self.session_span.set_attribute(
-                    "gen_ai.usage.input_tokens", self.metrics["input_tokens"]
-                )
-                self.session_span.set_attribute(
-                    "gen_ai.usage.output_tokens", self.metrics["output_tokens"]
-                )
-                self.session_span.set_attribute("turns", self.metrics["turns"])
-
-                # Add event for this turn with incremental tokens
-                self.session_span.add_event(
-                    "Turn completed",
-                    {
-                        "turn": self.metrics["turns"],
-                        "input_tokens": input_tokens,
-                        "output_tokens": output_tokens,
-                    },
-                )
-
-        # Store message
-        if hasattr(message, "content"):
-            self.messages.append({"role": "assistant", "content": message.content})
-
-        return {}
-
     async def on_pre_compact(
         self,
         input_data: dict[str, Any],

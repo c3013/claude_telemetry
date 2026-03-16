@@ -205,6 +205,42 @@ class TestOTELConfiguration:
 
         mock_resource.assert_called_once_with({"service.name": "my-service"})
 
+    def test_otel_service_name_env_overrides_default(self, mocker, monkeypatch):
+        """OTEL_SERVICE_NAME must win over the hardcoded service_name argument."""
+        from claude_telemetry.telemetry import _configure_otel  # noqa: PLC0415
+
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "")
+        monkeypatch.setenv("OTEL_SERVICE_NAME", "env-override")
+
+        mock_resource = mocker.patch("claude_telemetry.telemetry.Resource.create")
+        mocker.patch("claude_telemetry.telemetry.OTLPSpanExporter")
+        mocker.patch("claude_telemetry.telemetry.TracerProvider")
+        mocker.patch("claude_telemetry.telemetry.trace.set_tracer_provider")
+
+        _configure_otel("https://example.com", "claude-agents")
+
+        mock_resource.assert_called_once_with({"service.name": "env-override"})
+
+    def test_otel_resource_attributes_service_name_overrides_default(
+        self, mocker, monkeypatch
+    ):
+        """service.name in OTEL_RESOURCE_ATTRIBUTES must win over the code default."""
+        from claude_telemetry.telemetry import _configure_otel  # noqa: PLC0415
+
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "")
+        monkeypatch.setenv(
+            "OTEL_RESOURCE_ATTRIBUTES", "service.name=my-hook,env=prod"
+        )
+
+        mock_resource = mocker.patch("claude_telemetry.telemetry.Resource.create")
+        mocker.patch("claude_telemetry.telemetry.OTLPSpanExporter")
+        mocker.patch("claude_telemetry.telemetry.TracerProvider")
+        mocker.patch("claude_telemetry.telemetry.trace.set_tracer_provider")
+
+        _configure_otel("https://example.com", "claude-agents")
+
+        mock_resource.assert_called_once_with({"service.name": "my-hook"})
+
 
 class TestConsoleExporter:
     """Tests for console exporter configuration."""

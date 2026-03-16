@@ -250,69 +250,6 @@ class TestPostToolUse:
         await hooks.on_post_tool_use(input_data, "missing-tool", {})
 
 
-class TestMessageComplete:
-    """Tests for on_message_complete hook."""
-
-    @pytest.mark.asyncio
-    async def test_updates_token_counts(self, hooks, mocker):
-        """Test that token counts are updated correctly."""
-        hooks.session_span = mocker.MagicMock()
-        hooks.metrics = {
-            "input_tokens": 100,
-            "output_tokens": 200,
-            "turns": 2,
-        }
-
-        # Mock message with usage
-        message = mocker.MagicMock()
-        message.usage.input_tokens = 50
-        message.usage.output_tokens = 150
-
-        await hooks.on_message_complete(message, {})
-
-        assert hooks.metrics["input_tokens"] == 150
-        assert hooks.metrics["output_tokens"] == 350
-        assert hooks.metrics["turns"] == 3
-
-    @pytest.mark.asyncio
-    async def test_updates_span_attributes(self, hooks, mocker):
-        """Test that span attributes are updated with token counts."""
-        hooks.session_span = mocker.MagicMock()
-        # No need to set metrics - __init__ handles it now
-
-        message = mocker.MagicMock()
-        message.usage.input_tokens = 100
-        message.usage.output_tokens = 200
-
-        await hooks.on_message_complete(message, {})
-
-        # Verify span attributes were set
-        hooks.session_span.set_attribute.assert_any_call(
-            "gen_ai.usage.input_tokens", 100
-        )
-        hooks.session_span.set_attribute.assert_any_call(
-            "gen_ai.usage.output_tokens", 200
-        )
-        hooks.session_span.set_attribute.assert_any_call("turns", 1)
-
-    @pytest.mark.asyncio
-    async def test_stores_assistant_message(self, hooks, mocker):
-        """Test that assistant message is stored in history."""
-        hooks.session_span = mocker.MagicMock()
-        # No need to set metrics - __init__ handles it now
-
-        message = mocker.MagicMock()
-        message.usage.input_tokens = 100
-        message.usage.output_tokens = 200
-        message.content = "Here's my response"
-
-        await hooks.on_message_complete(message, {})
-
-        assert len(hooks.messages) == 1
-        assert hooks.messages[0]["role"] == "assistant"
-        assert hooks.messages[0]["content"] == "Here's my response"
-
-
 class TestSessionCompletion:
     """Tests for session completion."""
 

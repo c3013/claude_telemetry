@@ -28,6 +28,54 @@ Your agents become observable whether local or headless.
 
 ## Quick Start
 
+### Option 1: Hook-based (recommended) — keep using `claude` as-is
+
+Add OTel tracing to your existing `claude` workflow without changing any commands.
+Just configure hooks in `~/.claude/settings.json` once and every `claude` session
+is automatically traced.
+
+**Step 1 – Install:**
+
+```bash
+pip install claude2sunfire
+```
+
+**Step 2 – Configure a telemetry backend (one of):**
+
+```bash
+# Any OTEL backend (Honeycomb, Datadog, Grafana, …)
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://api.honeycomb.io"
+export OTEL_EXPORTER_OTLP_HEADERS="x-honeycomb-team=<key>"
+
+# Or Logfire
+export LOGFIRE_TOKEN="<token>"
+
+# Or console output (useful for debugging)
+export CLAUDE_TELEMETRY_DEBUG=1
+```
+
+**Step 3 – Install hooks into `~/.claude/settings.json`:**
+
+```bash
+claude2sunfire-hook install
+```
+
+Or if you prefer to edit the file manually, run `claude2sunfire-hook show-config`
+for the exact JSON to add.
+
+**Step 4 – Use `claude` as normal:**
+
+```bash
+claude "Analyze my project and suggest improvements"
+```
+
+Traces appear in your OTel backend automatically after each session ends.
+No wrapper, no code changes—just hooks that fire in the background.
+
+---
+
+### Option 2: `claudia` wrapper — drop-in replacement for `claude`
+
 The simplest way to add observability: swap `claude` for `claudia` on the command line.
 
 ```bash
@@ -40,6 +88,101 @@ claudia "Analyze my project and suggest improvements"
 
 That's it. Every flag you use with `claude code` works with `claudia`. The behavior is
 identical, but now you get full traces in your observability platform.
+
+## `.claude/settings.json` Hooks (Option 1 details)
+
+The `claude2sunfire-hook` CLI provides one sub-command per Claude Code hook event.
+Claude Code invokes each command as a subprocess, passing JSON on stdin.
+
+### Available commands
+
+| Command | Claude Code event | What it does |
+|---|---|---|
+| `user-prompt-submit` | `UserPromptSubmit` | Initialises session state file and opens a turn span |
+| `pre-tool-use` | `PreToolUse` | Records tool start + input |
+| `post-tool-use` | `PostToolUse` | Records tool result |
+| `pre-compact` | `PreCompact` | Records context-compaction event |
+| `subagent-stop` | `SubagentStop` | Records subagent completion with token usage |
+| `notification` | `Notification` | Records notification messages emitted by Claude Code |
+| `stop` | `Stop` | Exports the complete OTel trace with hierarchy & cleans up |
+
+### Manual configuration
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "claude2sunfire-hook user-prompt-submit"}]}
+    ],
+    "PreToolUse": [
+      {"hooks": [{"type": "command", "command": "claude2sunfire-hook pre-tool-use"}]}
+    ],
+    "PostToolUse": [
+      {"hooks": [{"type": "command", "command": "claude2sunfire-hook post-tool-use"}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "claude2sunfire-hook stop"}]}
+    ],
+    "PreCompact": [
+      {"hooks": [{"type": "command", "command": "claude2sunfire-hook pre-compact"}]}
+    ],
+    "SubagentStop": [
+      {"hooks": [{"type": "command", "command": "claude2sunfire-hook subagent-stop"}]}
+    ],
+    "Notification": [
+      {"hooks": [{"type": "command", "command": "claude2sunfire-hook notification"}]}
+    ]
+  }
+}
+```
+
+### Trace hierarchy
+
+The exported trace reflects the actual call structure of your Claude Code session:
+
+```
+🤖 <session prompt>                      ← root session span
+├── 👤 Turn 1: write hello world         ← UserPromptSubmit (closed at next turn or Stop)
+│   ├── 🔧 Bash: echo hello              ← PreToolUse → PostToolUse (matched by tool_use_id)
+│   └── 🔧 Read: /path/to/file
+├── 👤 Turn 2: add error handling        ← second user prompt
+│   └── 🔧 Write: /path/to/output
+├── 🗜️ Context compaction               ← PreCompact
+├── 🔔 Running linter...                 ← Notification
+└── 🤖 Subagent completed               ← SubagentStop
+```
+
+Each tool span covers the wall-clock time between `PreToolUse` and the matching
+`PostToolUse` (correlated by `tool_use_id`), giving accurate latencies for every
+tool call in the trace.
+
+### How the hook pipeline works
+
+Each data-collection hook (`user-prompt-submit`, `pre-tool-use`, etc.) writes event
+records to a session state file at `~/.cache/claude_telemetry/sessions/<session_id>.json`.
+The file persists across the multiple subprocess invocations that make up a single
+Claude Code session.
+
+When Claude Code fires the `Stop` event, `claude2sunfire-hook stop` reads the
+complete state and reconstructs the full span hierarchy retroactively — using
+explicit OTel `start_time`/`end_time` timestamps — so you get accurate parent-child
+relationships even though each hook ran in a separate process.
+
+This approach avoids the "long-lived span across processes" problem: you get one
+clean, complete trace per session with accurate timings and call relationships.
+
+### Utility commands
+
+```bash
+# Print the JSON snippet (for manual editing)
+claude2sunfire-hook show-config
+
+# Check that a backend is configured
+claude2sunfire-hook check-env
+
+# Install into project-level settings instead of user-level
+claude2sunfire-hook install --no-user --project
+```
 
 ## For Developers
 
@@ -80,13 +223,13 @@ workflows—all without changing how you work.
 
 ```bash
 # Basic installation - works with any OTEL backend
-pip install claude_telemetry
+pip install claude2sunfire
 
 # Or with Logfire support for enhanced LLM telemetry
-pip install "claude_telemetry[logfire]"
+pip install "claude2sunfire[logfire]"
 
 # Or with Sentry for LLM monitoring with error tracking
-pip install claude_telemetry sentry-sdk
+pip install claude2sunfire sentry-sdk
 ```
 
 ### For Python Scripts
@@ -299,10 +442,15 @@ export SENTRY_TRACES_SAMPLE_RATE="1.0"          # Optional (0.0-1.0)
 **Any OTEL backend:**
 
 ```bash
-export OTEL_EXPORTER_OTLP_ENDPOINT="https://your-endpoint.com/v1/traces"
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://your-endpoint.com"
 export OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer your-token"
 export OTEL_SERVICE_NAME="my-claude-agents"  # Optional, defaults to "claude-agents"
 ```
+
+> **Protocol & port:** `claude_telemetry` uses **OTLP/HTTP** (proto over HTTP, default
+> port **4318**), not gRPC (port 4317). Set `OTEL_EXPORTER_OTLP_ENDPOINT` to the base
+> URL of your backend (e.g. `https://api.honeycomb.io`). The `/v1/traces` path is
+> appended automatically, so you can include it or omit it — both forms work.
 
 **Debug mode:**
 
@@ -660,7 +808,7 @@ completion.
 **Logfire LLM UI not showing:**
 
 - Ensure `LOGFIRE_TOKEN` is set
-- Install the `logfire` extra: `pip install "claude_telemetry[logfire]"`
+- Install the `logfire` extra: `pip install "claude2sunfire[logfire]"`
 - Check console for "Logfire project URL" to confirm connection
 
 **Agent runs but no telemetry:**
@@ -683,6 +831,6 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 Built for the 100x community.
 
-Package name: `claude_telemetry` CLI name: `claudia`
+Package name: `claude2sunfire` CLI names: `claudia` / `claude2sunfire` / `claude2sunfire-hook`
 
 Based on OpenTelemetry standards. Enhanced Logfire integration when available.

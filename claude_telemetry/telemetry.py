@@ -117,7 +117,7 @@ Configure one of the following:
 
 1. Logfire (recommended for LLM observability):
    export LOGFIRE_TOKEN="your_token_here"
-   pip install "claude_telemetry[logfire]"
+   pip install "claude2sunfire[logfire]"
 
 2. Sentry (for LLM monitoring with error tracking):
    export SENTRY_DSN="https://your-key@sentry.io/project-id"
@@ -138,9 +138,38 @@ See https://github.com/TechNickAI/claude_telemetry for more details.
     )
 
 
+def _resolve_service_name(service_name: str) -> str:
+    """Return the effective service name, respecting OTel environment variables.
+
+    Priority (highest first):
+    1. ``OTEL_SERVICE_NAME`` env var (OTel spec top priority)
+    2. ``service.name`` key inside ``OTEL_RESOURCE_ATTRIBUTES``
+    3. The ``service_name`` argument (code-level default)
+
+    This ensures that users who set ``OTEL_SERVICE_NAME`` or include
+    ``service.name`` in ``OTEL_RESOURCE_ATTRIBUTES`` are not silently overridden
+    by the hardcoded ``"claude-agents"`` default.
+    """
+    env_service_name = os.getenv("OTEL_SERVICE_NAME", "").strip()
+    if env_service_name:
+        return env_service_name
+
+    for attr in os.getenv("OTEL_RESOURCE_ATTRIBUTES", "").split(","):
+        attr = attr.strip()
+        if attr.startswith("service.name="):
+            return attr.split("=", 1)[1].strip()
+
+    return service_name
+
+
 def _configure_otel(endpoint: str, service_name: str) -> TracerProvider:
-    """Configure standard OTEL exporter."""
-    resource = Resource.create({"service.name": service_name})
+    """Configure standard OTEL exporter.
+
+    Uses OTLP over HTTP (proto/HTTP, port 4318) — not gRPC (port 4317).
+    The /v1/traces path is appended automatically if omitted from the endpoint,
+    so both "https://api.example.com" and "https://api.example.com/v1/traces" work.
+    """
+    resource = Resource.create({"service.name": _resolve_service_name(service_name)})
 
     # Parse headers from environment
     headers = {}
@@ -151,7 +180,8 @@ def _configure_otel(endpoint: str, service_name: str) -> TracerProvider:
                 key, value = header.split("=", 1)
                 headers[key.strip()] = value.strip()
 
-    # Create OTLP exporter
+    # Create OTLP/HTTP exporter (port 4318 by default; not gRPC port 4317).
+    # Append /v1/traces to the base URL if the caller did not include it.
     exporter = OTLPSpanExporter(
         endpoint=endpoint
         if endpoint.endswith("/v1/traces")
@@ -172,7 +202,7 @@ def _configure_otel(endpoint: str, service_name: str) -> TracerProvider:
 
 def _configure_console_exporter(service_name: str) -> TracerProvider:
     """Configure console exporter for debugging."""
-    resource = Resource.create({"service.name": service_name})
+    resource = Resource.create({"service.name": _resolve_service_name(service_name)})
 
     provider = TracerProvider(resource=resource)
     processor = BatchSpanProcessor(ConsoleSpanExporter())
